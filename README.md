@@ -41,7 +41,20 @@ This will:
 - Upload only new/changed files to GCS.
 - Trigger Vertex AI embedding for the updated files.
 
-## 3. Daily Job Logs
+## 3. How to Run with Docker
+
+1. **Build the image:**
+   ```bash
+   docker build -t optisigns-scraper .
+   ```
+
+2. **Run the container:**
+   ```bash
+   # Mount the GCP key and pass the env file
+   docker run --env-file .env -v $(pwd)/gcp-key.json:/app/gcp-key.json optisigns-scraper
+   ```
+
+## 4. Daily Job Logs
 *Insert your link to the GCP Cloud Run / Cloud Scheduler logs here after deploying.*
 [Link to Daily Job Logs](#)
 

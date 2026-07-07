@@ -5,3 +5,4 @@ venv_alpha/
 __pycache__/
 *.py[cod]
 *$py.class
+tmp
