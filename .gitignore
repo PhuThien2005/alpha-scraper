@@ -1,1 +1,3 @@
 articles/*.md
+gcp-key.json
+.env
