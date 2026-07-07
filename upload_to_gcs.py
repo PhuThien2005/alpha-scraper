@@ -122,65 +122,76 @@ def sync_to_gcs_and_rag(source_folder, bucket_name):
         chunk_overlap=256
     )
 
-    success_import_count = 0
-    failed_import_count = 0
     total_import = len(files_to_import_to_rag)
     
     if total_import > 0:
-        print(f"\nTriggering embedding for {total_import} files ONE by ONE...")
+        print(f"\nTriggering embedding for {total_import} files...")
         
-    batch_size = 1
-    gcs_uris = [f"gs://{bucket_name}/{f}" for f in files_to_import_to_rag]
-    
-    for i in range(0, len(gcs_uris), batch_size):
-        batch_uris = gcs_uris[i:i + batch_size]
-        file_name = batch_uris[0].split("/")[-1]
-        print(f"[{i+1}/{total_import}] Importing to RAG: {file_name}")
-        
-        gcs_source = aiplatform_beta.GcsSource(uris=batch_uris)
-        import_config = aiplatform_beta.ImportRagFilesConfig(
-            gcs_source=gcs_source
-        )
-        import_request = aiplatform_beta.ImportRagFilesRequest(parent=parent, import_rag_files_config=import_config)
+    batch_size = 10
+    files_to_import = files_to_import_to_rag.copy()
+    max_passes = 10
+    pass_num = 1
 
-        max_retries = 3
-        for attempt in range(max_retries):
+    while files_to_import and pass_num <= max_passes:
+        print(f"\n--- PASS {pass_num}: Importing {len(files_to_import)} files in batches of {batch_size} ---")
+        failed_in_this_pass = []
+        
+        gcs_uris = [f"gs://{bucket_name}/{f}" for f in files_to_import]
+        
+        for i in range(0, len(gcs_uris), batch_size):
+            batch_uris = gcs_uris[i:i + batch_size]
+            batch_filenames = files_to_import[i:i + batch_size]
+            
+            print(f"Importing batch of {len(batch_uris)} files (starting with {batch_filenames[0]})...")
+            
+            gcs_source = aiplatform_beta.GcsSource(uris=batch_uris)
+            import_config = aiplatform_beta.ImportRagFilesConfig(gcs_source=gcs_source)
+            import_request = aiplatform_beta.ImportRagFilesRequest(parent=parent, import_rag_files_config=import_config)
+
             try:
                 response = rag_client.import_rag_files(request=import_request).result()
-                
-                if response.failed_rag_files_count > 0 and attempt < max_retries - 1:
-                    print(f" -> Internal failure detected for {file_name}. Retrying in {5 * (attempt + 1)}s...")
-                    time.sleep(5 * (attempt + 1))
-                    continue # Retry
-                
-                success_import_count += response.imported_rag_files_count
-                failed_import_count += response.failed_rag_files_count
-                
                 if response.failed_rag_files_count > 0:
-                    print(f" -> Failed to import {file_name} permanently.")
+                    print(f" -> Partial failure detected in batch. Will verify later.")
+                    failed_in_this_pass.extend(batch_filenames)
                 else:
-                    print(f" -> Successfully imported {file_name}.")
-                
-                time.sleep(1) # Nghỉ 1s giữa các file
-                break
+                    print(f" -> Batch succeeded.")
             except Exception as e:
-                if "429" in str(e) or attempt < max_retries - 1:
-                    print(f" -> Hit quota limit. Retrying in {5 * (attempt + 1)}s...")
-                    time.sleep(5 * (attempt + 1))
-                else:
-                    print(f" -> Failed to submit {file_name}: {e}")
+                print(f" -> Batch failed with API limit/error. Will retry. Error snippet: {str(e)[:100]}...")
+                failed_in_this_pass.extend(batch_filenames)
+                
+            time.sleep(3) # Nghỉ 3s giữa các batch
+            
+        if failed_in_this_pass:
+            print("\nVerifying which files actually failed by checking Vertex RAG Corpus...")
+            # Fetch the latest RAG corpus state
+            current_rag_files = []
+            for rag_file in rag_client.list_rag_files(request=aiplatform_beta.ListRagFilesRequest(parent=parent)):
+                current_rag_files.append(rag_file.display_name)
+                
+            # Keep only files that are still missing
+            files_to_import = [f for f in failed_in_this_pass if f not in current_rag_files]
+            
+            if files_to_import:
+                print(f"Confirmed: {len(files_to_import)} files failed. Retrying them in the next pass.")
+                time.sleep(5) # Nghỉ 5s trước khi chạy pass tiếp theo
+            else:
+                print("Verification complete: All files in this pass actually succeeded!")
+        else:
+            files_to_import = [] # Everything succeeded
+            
+        pass_num += 1
+
+    failed_import_count = len(files_to_import)
+    success_import_count = total_import - failed_import_count
 
     if total_import > 0:
-        print(f"EMBEDDING COMPLETE: {success_import_count} succeeded, {failed_import_count} failed out of {total_import} submitted.")
+        print(f"\nEMBEDDING COMPLETE: {success_import_count} succeeded, {failed_import_count} failed out of {total_import} submitted.")
         
         if failed_import_count > 0:
             print("\n--- Identifying Failed Files ---")
-            final_rag_files = [f.display_name for f in rag_client.list_rag_files(request=aiplatform_beta.ListRagFilesRequest(parent=parent))]
-            failed_files_list = [f for f in files_to_import_to_rag if f not in final_rag_files]
-            if failed_files_list:
-                print("The following files failed to import into Vertex RAG:")
-                for f in failed_files_list:
-                    print(f"  - {f}")
+            print("The following files failed to import after all retries:")
+            for f in files_to_import:
+                print(f"  - {f}")
 
     print(f"\n================ FINAL SYNC REPORT ================")
     print(f"   - Added  : {added_count} (Successfully Embedded: {success_import_count}/{total_import})")

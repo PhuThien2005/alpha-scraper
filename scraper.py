@@ -40,7 +40,7 @@ def run_scraper():
                         markdown_content = markdownify.markdownify(html_body, heading_style="ATX")
                         os.makedirs("articles", exist_ok=True)
                         file_name = f"articles/{slug}.md"
-                        with open(file_name, "w", encoding="utf-8") as f:
+                        with open(file_name, "w", encoding="utf-8", newline='\n') as f:
                             f.write(f"# {title}\n\n")
                             if original_url:
                                 f.write(f"**Source URL:** {original_url}\n\n")
