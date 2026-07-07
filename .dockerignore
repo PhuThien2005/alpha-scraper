@@ -1,0 +1,10 @@
+venv_alpha/
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+gcp-key.json
+articles/
+.git/
+.gitignore
+README.md

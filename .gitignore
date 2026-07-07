@@ -1,3 +1,7 @@
 articles/*.md
 gcp-key.json
 .env
+venv_alpha/
+__pycache__/
+*.py[cod]
+*$py.class
