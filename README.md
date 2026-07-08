@@ -1,67 +1,116 @@
-# OptiBot Mini-Clone
+# OptiSigns - OptiBot Mini-Clone Daily Sync Job
 
-This repository contains a Python-based Daily Job Pipeline that scrapes OptiSigns support articles, converts them to Markdown, and synchronizes the files to Google Cloud Storage (GCS) and Google Vertex AI (Gemini). Only delta changes (new or modified files) are uploaded.
+This repository implements a Dockerized daily pipeline that scrapes support articles from `support.optisigns.com`, converts them to Markdown, and synchronizes the files to Google Cloud Storage (GCS) and a Google Vertex AI RAG Corpus. Only delta changes (new, updated, or deleted articles) are synchronized.
+
+---
 
 ## 1. Setup Instructions
 
-1. **Clone the repository:**
-   ```bash
-   git clone <your-repo-url>
-   cd <your-repo-name>
-   ```
+Perform these steps inside your WSL / Linux terminal:
 
-2. **Set up a Virtual Environment:**
-   ```bash
-   python -m venv venv_alpha
-   source venv_alpha/bin/activate  # On Windows: venv_alpha\Scripts\activate
-   ```
+### Step 1: Create and Activate Virtual Environment
+```bash
+python3 -m venv venv_alpha
+source venv_alpha/bin/activate
+```
 
-3. **Install Dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
+### Step 2: Install Dependencies
+```bash
+pip install -r requirements.txt
+```
 
-4. **Environment Variables:**
-   - Copy the `.env.sample` file to `.env`:
-     ```bash
-     cp .env.sample .env
-     ```
-   - Fill in your actual GCP details in the `.env` file.
-   - Place your Google Cloud service account JSON key in the root directory and name it `gcp-key.json` (ensure it is ignored by git).
+### Step 3: Configure Environment Variables & Keys
+1. Copy `.env.sample` to `.env`:
+   ```bash
+   cp .env.sample .env
+   ```
+2. Populate `.env` with your GCP details:
+   * `GCS_BUCKET_NAME`: Name of your GCS bucket.
+   * `GCP_PROJECT_ID`: Your GCP Project ID (e.g. `alpha-scraper-501706`).
+   * `VERTEX_CORPUS_ID`: Your Vertex AI RAG Corpus ID.
+3. Place your Google Cloud service account JSON key in the root directory and name it `gcp-key.json` (ignored by Git).
+
+---
 
 ## 2. How to Run Locally
 
-With the virtual environment activated and `.env` configured, simply run:
+### Run the Entire Pipeline
+To scrape and synchronize the delta to GCS & Vertex AI RAG:
 ```bash
 python main.py
 ```
-This will:
-- Scrape Zendesk articles to the `articles/` folder.
-- Hash and compare local files with GCS to find the delta.
-- Upload only new/changed files to GCS.
-- Trigger Vertex AI embedding for the updated files.
 
-## 3. How to Run with Docker
+### Run Scraper Separately
+To scrape and output Markdown files to the local `./articles` folder only:
+```bash
+python scraper.py
+```
 
-1. **Build the image:**
+---
+
+## 3. How to Run with Docker & Deploy
+
+### Run Locally with Docker
+1. Build the image:
    ```bash
    docker build -t optisigns-scraper .
    ```
-
-2. **Run the container:**
+2. Run the container:
    ```bash
-   # Mount the GCP key and pass the env file
    docker run --env-file .env -v $(pwd)/gcp-key.json:/app/gcp-key.json optisigns-scraper
    ```
 
-## 4. Daily Job Logs
-*Insert your link to the GCP Cloud Run / Cloud Scheduler logs here after deploying.*
-[Link to Daily Job Logs](#)
+### Deploy to Google Cloud Run Jobs
+
+1. Authenticate Docker with Google Artifact Registry:
+   ```bash
+   gcloud auth print-access-token | docker login -u oauth2accesstoken --password-stdin https://us-central1-docker.pkg.dev
+   ```
+
+2. Build and Tag the Image:
+   ```bash
+   docker build -t us-central1-docker.pkg.dev/alpha-scraper-501706/optibot-repo/optibot-scraper:latest .
+   ```
+
+3. Push the Image to Artifact Registry:
+   ```bash
+   docker push us-central1-docker.pkg.dev/alpha-scraper-501706/optibot-repo/optibot-scraper:latest
+   ```
+
+4. Update the Cloud Run Job:
+   ```bash
+   gcloud run jobs update optibot-scraper-daily \
+     --image us-central1-docker.pkg.dev/alpha-scraper-501706/optibot-repo/optibot-scraper:latest \
+     --region us-central1
+   ```
+
+5. Execute the Cloud Run Job:
+   ```bash
+   gcloud run jobs execute optibot-scraper-daily --region us-central1
+   ```
+
+---
 
 ## 4. Chunking Strategy
-*(Briefly explain your chunking strategy here. For example: "We rely on Vertex AI's default chunking strategy when importing files from GCS, which automatically parses markdown headings and paragraphs to preserve semantic context.")*
 
-## 5. Assistant Screenshot
-*Insert your screenshot of the Gemini/AI Studio assistant correctly answering the question: "How do I add a YouTube video?" with cited URLs here.*
+* **Chunk Size**: 1024 tokens.
+* **Chunk Overlap**: 256 tokens.
+* **Rationale**: Markdown files utilize headings and code blocks. Using 1024 tokens preserves semantic structures (e.g. lists, steps, and paragraphs) in single chunks. The 256-token overlap ensures contextual transitions between sections are retained.
 
-![Assistant Screenshot](./screenshot.png)
+---
+
+## 5. Daily Job Logs
+
+The execution logs can be accessed via:
+* **GCP Cloud Run Job Logs**: [GCP Console Link](https://console.cloud.google.com/run/jobs/details/us-central1/optibot-scraper-daily/executions?project=alpha-scraper-501706) (requires project viewer permissions)
+* **Local Run Log Artifact**: [View last run log file](./last_run_log.txt) (fallback for immediate public viewing)
+
+---
+
+## 6. Assistant Sanity Check Screenshot
+
+Below is the verification screenshot showing the assistant answering the sample question "How do I add a YouTube video?" with cited URLs:
+
+![OptiBot Assistant Answer Screenshot](./screenshot.png)
+
+

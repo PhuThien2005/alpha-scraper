@@ -134,15 +134,16 @@ def sync_to_gcs_and_rag(source_folder, bucket_name):
 
     while files_to_import and pass_num <= max_passes:
         print(f"\n--- PASS {pass_num}: Importing {len(files_to_import)} files in batches of {batch_size} ---")
-        failed_in_this_pass = []
         
         gcs_uris = [f"gs://{bucket_name}/{f}" for f in files_to_import]
         
+        total_batches = (len(gcs_uris) + batch_size - 1) // batch_size
         for i in range(0, len(gcs_uris), batch_size):
+            batch_idx = (i // batch_size) + 1
             batch_uris = gcs_uris[i:i + batch_size]
             batch_filenames = files_to_import[i:i + batch_size]
             
-            print(f"Importing batch of {len(batch_uris)} files (starting with {batch_filenames[0]})...")
+            print(f"[{batch_idx}/{total_batches}] Importing batch of {len(batch_uris)} files...")
             
             gcs_source = aiplatform_beta.GcsSource(uris=batch_uris)
             import_config = aiplatform_beta.ImportRagFilesConfig(gcs_source=gcs_source)
@@ -151,33 +152,37 @@ def sync_to_gcs_and_rag(source_folder, bucket_name):
             try:
                 response = rag_client.import_rag_files(request=import_request).result()
                 if response.failed_rag_files_count > 0:
-                    print(f" -> Partial failure detected in batch. Will verify later.")
-                    failed_in_this_pass.extend(batch_filenames)
+                    print(f" -> Partial failure/issues reported in batch response (failed count: {response.failed_rag_files_count}).")
                 else:
-                    print(f" -> Batch succeeded.")
+                    print(f" -> Batch API import request completed successfully.")
             except Exception as e:
-                print(f" -> Batch failed with API limit/error. Will retry. Error snippet: {str(e)[:100]}...")
-                failed_in_this_pass.extend(batch_filenames)
+                print(f" -> Batch API import request failed. Error snippet: {str(e)[:100]}...")
                 
             time.sleep(3) # Nghỉ 3s giữa các batch
             
-        if failed_in_this_pass:
-            print("\nVerifying which files actually failed by checking Vertex RAG Corpus...")
-            # Fetch the latest RAG corpus state
-            current_rag_files = []
+        # At the end of the pass, unconditionally verify which files from the original files_to_import_to_rag are still missing
+        print("\nVerifying which files are still missing from the Vertex RAG Corpus...")
+        current_rag_files = []
+        try:
             for rag_file in rag_client.list_rag_files(request=aiplatform_beta.ListRagFilesRequest(parent=parent)):
                 current_rag_files.append(rag_file.display_name)
-                
-            # Keep only files that are still missing
-            files_to_import = [f for f in failed_in_this_pass if f not in current_rag_files]
-            
-            if files_to_import:
-                print(f"Confirmed: {len(files_to_import)} files failed. Retrying them in the next pass.")
-                time.sleep(5) # Nghỉ 5s trước khi chạy pass tiếp theo
-            else:
-                print("Verification complete: All files in this pass actually succeeded!")
+        except Exception as e:
+            print(f"Warning: Failed to fetch list of RAG files: {e}. Will retry verification after a short pause.")
+            time.sleep(5)
+            try:
+                for rag_file in rag_client.list_rag_files(request=aiplatform_beta.ListRagFilesRequest(parent=parent)):
+                    current_rag_files.append(rag_file.display_name)
+            except Exception as e2:
+                print(f"Error: Failed to fetch list of RAG files again: {e2}. Proceeding with assumption of failure.")
+
+        # Keep only the files we wanted to import that are still not in RAG
+        files_to_import = [f for f in files_to_import_to_rag if f not in current_rag_files]
+        
+        if files_to_import:
+            print(f"Confirmed: {len(files_to_import)} files are still missing/failed. Retrying them in the next pass.")
+            time.sleep(5) # Nghỉ 5s trước khi chạy pass tiếp theo
         else:
-            files_to_import = [] # Everything succeeded
+            print("Verification complete: All files are successfully present in the RAG Corpus!")
             
         pass_num += 1
 
